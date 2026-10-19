@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Full Track 1 pipeline: 3 LODO folds -> final all-data model -> decoder -> zip.
 #   ./run_pipeline.sh [run_name] [extra train_lodo.py args...]
+# Safe to re-run after a crash or power cut: finished folds are skipped and
+# unfinished ones resume from their last epoch checkpoint (last.pth).
 set -euo pipefail
 cd "$(dirname "$0")"
 NAME=${1:-convnext_tiny_v1}; shift || true

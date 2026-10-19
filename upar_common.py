@@ -5,6 +5,8 @@ run.py carries its own copy of the model builder so it has no dependency on
 this file.
 """
 import csv
+import io
+import os
 from pathlib import Path
 
 import numpy as np
@@ -51,6 +53,37 @@ def read_gt(split):
 
 def domain_of(path):
     return path.split("/", 1)[0]
+
+
+# --------------------------------------------------------------------------- atomic writes
+# A power cut mid-write must never leave a half-written file under the real
+# name: write to <name>.tmp, fsync, rename over the target, fsync the folder.
+
+def atomic_write_bytes(path, data):
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    dir_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def atomic_torch_save(obj, path):
+    buf = io.BytesIO()
+    torch.save(obj, buf)
+    atomic_write_bytes(path, buf.getvalue())
+
+
+def atomic_np_save(path, arr):
+    buf = io.BytesIO()
+    np.save(buf, arr)
+    atomic_write_bytes(path, buf.getvalue())
 
 
 def load_cache():

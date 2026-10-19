@@ -6,3 +6,4 @@ runs/
 checkpoints/
 *.zip
 submission/assets/
+backups/

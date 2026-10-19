@@ -8,6 +8,7 @@ decoder.json into submission/assets/, then zips the folder contents so run.py
 sits at the archive root.
 """
 import argparse
+import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -42,10 +43,14 @@ def main():
     shutil.copy(decoder, assets / "decoder.json")
 
     out = Path(args.out or ROOT / f"submission_{args.run}.zip")
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+    tmp = out.with_name(out.name + ".tmp")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in sorted(SUB.rglob("*")):
             if f.is_file() and "__pycache__" not in f.parts and f.name != ".DS_Store":
                 zf.write(f, f.relative_to(SUB))
+    with open(tmp, "rb") as fh:
+        os.fsync(fh.fileno())
+    os.replace(tmp, out)  # never leave a half-written zip under the real name
     print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
     for name in zipfile.ZipFile(out).namelist():
         print("  ", name)

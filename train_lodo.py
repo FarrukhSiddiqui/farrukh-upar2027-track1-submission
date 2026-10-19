@@ -7,8 +7,14 @@ one whole source dataset (train+val images) and trains on the other two:
     python train_lodo.py --holdout all-folds   # the three folds back to back
     python train_lodo.py --holdout none        # final model on all three datasets
 
-Each fold writes runs/<name>/<holdout>/{model.pth, oof_logits.npy, log.jsonl}.
-fit_decoder.py turns the held-out logits of all folds into thresholds.
+Each fold writes runs/<name>/<holdout>/{model.pth, oof_logits.npy, log.jsonl}
+and done.json last. fit_decoder.py turns the held-out logits of all folds into
+thresholds.
+
+Power-loss safety: every file is written atomically, and last.pth (model,
+EMA, optimizer, scheduler, RNG) is saved after every epoch. Re-running the
+same command skips folds that have done.json and resumes the others from
+last.pth.
 """
 import argparse
 import json
@@ -23,6 +29,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from upar_common import (DOMAINS, IMAGE_SIZE, MEAN, RUNS_DIR, AttributeNet,
+                         atomic_np_save, atomic_torch_save, atomic_write_bytes,
                          load_cache, per_domain_metrics)
 
 
@@ -180,6 +187,9 @@ def run_fold(args, holdout, images, labels, domains):
 
     out_dir = RUNS_DIR / args.name / holdout
     out_dir.mkdir(parents=True, exist_ok=True)
+    if (out_dir / "done.json").exists():
+        print(f"=== fold holdout={holdout}: already done, skipping")
+        return
     print(f"\n=== fold holdout={holdout}: train {len(train_idx)}, eval {len(eval_idx)}, "
           f"sampling share {share}")
 
@@ -203,9 +213,26 @@ def run_fold(args, holdout, images, labels, domains):
     eval_model = AttributeNet(args.backbone, pretrained=False, drop=args.dropout).to(device)
     eval_model = eval_model.to(memory_format=torch.channels_last)
 
+    best, step, start = -1.0, 0, 1
+    last = out_dir / "last.pth"
+    if last.exists():
+        ck = torch.load(last, map_location="cpu", weights_only=False)
+        model.load_state_dict(ck["model"])
+        opt.load_state_dict(ck["opt"])
+        sched.load_state_dict(ck["sched"])
+        ema.shadow = {k: v.to(device) for k, v in ck["ema"].items()}
+        best, step, start = ck["best"], ck["step"], ck["epoch"] + 1
+        torch.set_rng_state(ck["rng_torch"])
+        np.random.set_state(ck["rng_numpy"])
+        print(f"resumed from {last} at epoch {start}")
+    # log.jsonl is rewritten from the checkpointed records, so a crash between
+    # a log line and its checkpoint never leaves a duplicate epoch.
+    records = ck["records"] if last.exists() else []
     log = (out_dir / "log.jsonl").open("w")
-    best, step = -1.0, 0
-    for epoch in range(1, args.epochs + 1):
+    for r in records:
+        log.write(json.dumps(r) + "\n")
+    log.flush()
+    for epoch in range(start, args.epochs + 1):
         model.train()
         t0, run_loss = time.time(), 0.0
         bar = tqdm(train_stream, desc=f"[{holdout}] epoch {epoch}/{args.epochs}", leave=False)
@@ -240,20 +267,31 @@ def run_fold(args, holdout, images, labels, domains):
         print(json.dumps(rec))
         log.write(json.dumps(rec) + "\n")
         log.flush()
+        records.append(rec)
+        atomic_torch_save({
+            "model": model.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
+            "ema": {k: v.cpu() for k, v in ema.shadow.items()}, "epoch": epoch, "step": step,
+            "best": best, "records": records, "rng_torch": torch.get_rng_state(),
+            "rng_numpy": np.random.get_state(),
+        }, last)
 
     # Keep the final EMA weights (no early stopping on the held-out domain:
     # the final all-data model has no held-out set to stop on either).
     state = {k: v.cpu() for k, v in ema.shadow.items()}
-    torch.save({"state_dict": state, "backbone": args.backbone, "image_size": list(IMAGE_SIZE),
-                "holdout": holdout, "args": vars(args)}, out_dir / "model.pth")
+    atomic_torch_save({"state_dict": state, "backbone": args.backbone,
+                       "image_size": list(IMAGE_SIZE), "holdout": holdout, "args": vars(args)},
+                      out_dir / "model.pth")
     if len(eval_idx):
         eval_model.load_state_dict(ema.shadow)
         logits = predict_logits(eval_model, eval_stream, device, tta=True)
-        np.save(out_dir / "oof_logits.npy", logits.astype(np.float32))
-        np.save(out_dir / "oof_index.npy", eval_idx)
+        atomic_np_save(out_dir / "oof_logits.npy", logits.astype(np.float32))
+        atomic_np_save(out_dir / "oof_index.npy", eval_idx)
         mean, _ = per_domain_metrics(labels[eval_idx], logits > 0, domains[eval_idx])
         print(f"[{holdout}] final EMA+flipTTA @0.5: " +
               ", ".join(f"{k}={v:.4f}" for k, v in mean.items()))
+    log.close()
+    atomic_write_bytes(out_dir / "done.json", json.dumps({"epochs": args.epochs}).encode())
+    last.unlink(missing_ok=True)  # 450 MB; the fold is complete without it
     print(f"saved {out_dir}")
 
 

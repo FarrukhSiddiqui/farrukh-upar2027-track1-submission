@@ -25,7 +25,7 @@ import json
 import numpy as np
 import torch
 
-from upar_common import DOMAINS, GROUPS, RUNS_DIR, load_cache
+from upar_common import DOMAINS, GROUPS, RUNS_DIR, atomic_write_bytes, load_cache
 
 
 EPS = 1e-20
@@ -177,7 +177,7 @@ def main():
         "run": args.run,
     }
     path = RUNS_DIR / args.run / "decoder.json"
-    path.write_text(json.dumps(out, indent=2))
+    atomic_write_bytes(path, json.dumps(out, indent=2).encode())
     print(f"saved {path}")
 
 
