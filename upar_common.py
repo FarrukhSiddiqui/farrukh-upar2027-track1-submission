@@ -129,6 +129,17 @@ class AttributeNet(nn.Module):
         return self.head(self.drop(self.norm(f)))
 
 
+def build_model(backbone, pretrained=True, drop=0.2, drop_path=0.1):
+    """torchvision CNNs -> AttributeNet; clip_* -> submission/clip_vit.CLIPAttributeNet."""
+    if backbone.startswith("clip_"):
+        import sys
+        sys.path.insert(0, str(ROOT / "submission"))
+        from clip_vit import CLIPAttributeNet
+        init = ROOT / "pretrained" / f"{backbone}_init.pth" if pretrained else None
+        return CLIPAttributeNet(backbone, IMAGE_SIZE, drop_path=drop_path, init_path=init)
+    return AttributeNet(backbone, pretrained=pretrained, drop=drop)
+
+
 # --------------------------------------------------------------------------- metrics
 
 EPS = 1e-20  # same epsilon as the reference UPAR / Rethinking-PAR evaluation

@@ -7,3 +7,4 @@ checkpoints/
 *.zip
 submission/assets/
 backups/
+pretrained/

@@ -23,12 +23,15 @@ import queue
 import threading
 import time
 
+import io
+
 import numpy as np
 import torch
+from PIL import Image
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from upar_common import (DOMAINS, IMAGE_SIZE, MEAN, RUNS_DIR, AttributeNet,
+from upar_common import (DOMAINS, IMAGE_SIZE, MEAN, RUNS_DIR, build_model,
                          atomic_np_save, atomic_torch_save, atomic_write_bytes,
                          load_cache, per_domain_metrics)
 
@@ -39,8 +42,9 @@ class BatchStream:
     """Draws index batches, gathers pixels from the memmap in a background thread."""
 
     def __init__(self, images, labels, indices, batch_size, weights=None, shuffle=True,
-                 drop_last=True, prefetch=6):
+                 drop_last=True, prefetch=6, jpeg_p=0.0):
         self.images, self.labels = images, labels
+        self.jpeg_p = jpeg_p
         self.indices = np.asarray(indices)
         self.batch_size, self.shuffle, self.drop_last = batch_size, shuffle, drop_last
         self.prefetch = prefetch
@@ -65,13 +69,26 @@ class BatchStream:
             for b in range(len(self)):
                 idx = order[b * self.batch_size:(b + 1) * self.batch_size]
                 srt = np.sort(idx)  # sorted reads are friendlier to the memmap
-                q.put((torch.from_numpy(np.ascontiguousarray(self.images[srt])).pin_memory(),
+                px = np.ascontiguousarray(self.images[srt])
+                if self.jpeg_p:
+                    px = jpeg_recompress(px, self.jpeg_p)
+                q.put((torch.from_numpy(px).pin_memory(),
                        torch.from_numpy(self.labels[srt].astype(np.float32)), srt))
             q.put(None)
 
         threading.Thread(target=worker, daemon=True).start()
         while (item := q.get()) is not None:
             yield item
+
+
+def jpeg_recompress(px, p, quality=(30, 90)):
+    """Re-encode a random subset of images as JPEG to mimic surveillance compression."""
+    for i in np.where(np.random.rand(len(px)) < p)[0]:
+        buf = io.BytesIO()
+        Image.fromarray(px[i]).save(buf, "JPEG", quality=int(np.random.randint(*quality)))
+        buf.seek(0)
+        px[i] = np.asarray(Image.open(buf).convert("RGB"))
+    return px
 
 
 def to_input(u8, device):
@@ -82,18 +99,23 @@ def to_input(u8, device):
     return ((x - mean) / std).contiguous(memory_format=torch.channels_last)
 
 
-def gpu_augment(x, strength=1.0):
-    """Augment a normalized batch on the GPU. No hue changes, since colours are labels."""
+def gpu_augment(x, strength=1.0, strong_lowres=False):
+    """Augment a normalized batch on the GPU. No hue changes, since colours are labels.
+
+    strong_lowres: down-sample to 24-64 px height (surveillance-scale crops),
+    add motion blur, and widen the aspect / offset jitter to +-15%.
+    """
     n, _, h, w = x.shape
     dev = x.device
+    jit = 0.15 if strong_lowres else 0.1
     # horizontal flip
     flip = torch.rand(n, device=dev) < 0.5
     x = torch.where(flip.view(n, 1, 1, 1), x.flip(3), x)
     # random scale / translate / small aspect change via affine grid
     s = 1 + (torch.rand(n, device=dev) * 0.25 - 0.15) * strength
-    ar = 1 + (torch.rand(n, device=dev) * 0.2 - 0.1) * strength
-    tx = (torch.rand(n, device=dev) * 2 - 1) * 0.08 * strength
-    ty = (torch.rand(n, device=dev) * 2 - 1) * 0.08 * strength
+    ar = 1 + (torch.rand(n, device=dev) * 2 * jit - jit) * strength
+    tx = (torch.rand(n, device=dev) * 2 - 1) * (jit - 0.02) * strength
+    ty = (torch.rand(n, device=dev) * 2 - 1) * (jit - 0.02) * strength
     theta = torch.zeros(n, 2, 3, device=dev)
     theta[:, 0, 0] = s * ar
     theta[:, 1, 1] = s / ar
@@ -102,11 +124,14 @@ def gpu_augment(x, strength=1.0):
     grid = F.affine_grid(theta, x.shape, align_corners=False)
     x = F.grid_sample(x, grid, mode="bilinear", padding_mode="reflection", align_corners=False)
     # low-resolution simulation: down-sample then up-sample a third of the batch
-    lowres = torch.rand(n, device=dev) < 0.33 * strength
+    lowres = torch.rand(n, device=dev) < (0.4 if strong_lowres else 0.33) * strength
     if lowres.any():
-        f = float(np.random.uniform(0.25, 0.6))
+        f = float(np.random.uniform(24 / h, 64 / h) if strong_lowres and np.random.rand() < 0.6
+                  else np.random.uniform(0.25, 0.6))
         small = F.interpolate(x[lowres], scale_factor=f, mode="bilinear", antialias=True)
         x[lowres] = F.interpolate(small, size=(h, w), mode="bilinear")
+    if strong_lowres:
+        x = motion_blur(x, torch.rand(n, device=dev) < 0.2 * strength)
     # brightness / contrast / saturation (in normalized space, approximately)
     b = (torch.rand(n, 1, 1, 1, device=dev) * 0.4 - 0.2) * strength
     c = 1 + (torch.rand(n, 1, 1, 1, device=dev) * 0.4 - 0.2) * strength
@@ -128,6 +153,21 @@ def gpu_augment(x, strength=1.0):
                & (xx >= x0.view(n, 1, 1)) & (xx < (x0 + ew).view(n, 1, 1)) & erase.view(n, 1, 1))
         x = torch.where(box.unsqueeze(1), torch.randn_like(x) * 0.5, x)
     return x.contiguous(memory_format=torch.channels_last)
+
+
+def motion_blur(x, which):
+    """Linear motion blur (horizontal or vertical, 3-9 px) on the selected images."""
+    if not which.any():
+        return x
+    k = int(np.random.choice([3, 5, 7, 9]))
+    kernel = torch.full((3, 1, 1, k), 1.0 / k, device=x.device, dtype=x.dtype)
+    if np.random.rand() < 0.5:
+        kernel = kernel.transpose(2, 3)
+    pad = (k // 2, k // 2, 0, 0) if kernel.shape[3] == k else (0, 0, k // 2, k // 2)
+    blurred = F.conv2d(F.pad(x[which], pad, mode="reflect"), kernel, groups=3)
+    x = x.clone()
+    x[which] = blurred.to(x.dtype)
+    return x
 
 
 # --------------------------------------------------------------------------- train
@@ -193,24 +233,44 @@ def run_fold(args, holdout, images, labels, domains):
     print(f"\n=== fold holdout={holdout}: train {len(train_idx)}, eval {len(eval_idx)}, "
           f"sampling share {share}")
 
-    train_stream = BatchStream(images, labels, train_idx, args.batch_size, weights=weights)
+    # Loss mask: a (domain, attribute) pair with almost no positives is an
+    # attribute that source dataset never annotated (e.g. Market1501 has no
+    # brown/orange/pink upper body). Its zeros are "unknown", not "absent".
+    pos = np.stack([labels[train_idx][domains[train_idx] == d].sum(0)
+                    for d in range(len(DOMAINS))])
+    loss_mask = np.ones((len(DOMAINS), labels.shape[1]), dtype=np.float32)
+    if args.mask_unlabeled:
+        present = np.bincount(domains[train_idx], minlength=len(DOMAINS)) > 0
+        loss_mask[(pos < args.mask_min_pos) & present[:, None]] = 0
+        print("masked (domain, attribute):", [(DOMAINS[d], int(a)) for d, a in
+                                              zip(*np.where(loss_mask == 0))])
+    loss_mask_t = torch.from_numpy(loss_mask).to(device)
+    domains_t = torch.from_numpy(domains).to(device)
+
+    train_stream = BatchStream(images, labels, train_idx, args.batch_size, weights=weights,
+                               jpeg_p=args.jpeg_p)
     eval_stream = BatchStream(images, labels, eval_idx, 256, shuffle=False, drop_last=False)
 
-    model = AttributeNet(args.backbone, pretrained=True, drop=args.dropout).to(device)
+    model = build_model(args.backbone, True, args.dropout, args.drop_path).to(device)
     model = model.to(memory_format=torch.channels_last)
-    head_params = list(model.head.parameters()) + list(model.norm.parameters())
+    head_params = list(model.head.parameters())
+    if hasattr(model, "norm"):
+        head_params += list(model.norm.parameters())
     head_ids = {id(p) for p in head_params}
     back_params = [p for p in model.parameters() if id(p) not in head_ids]
-    opt = torch.optim.AdamW([
-        {"params": back_params, "lr": args.lr},
-        {"params": head_params, "lr": args.lr * args.head_lr_mult},
-    ], weight_decay=args.weight_decay)
+    if hasattr(model, "param_groups"):  # ViT: layer-wise LR decay, no decay on norms/biases
+        groups = model.param_groups(args.lr, args.lr * args.head_lr_mult, args.layer_decay,
+                                    args.weight_decay)
+    else:
+        groups = [{"params": back_params, "lr": args.lr},
+                  {"params": head_params, "lr": args.lr * args.head_lr_mult}]
+    opt = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
     total = args.epochs * len(train_stream)
     warm = min(len(train_stream), total // 10)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1, (s + 1) / warm) * 0.5 * (
         1 + math.cos(math.pi * min(1.0, max(0, s - warm) / max(1, total - warm)))))
     ema = EMA(model, args.ema)
-    eval_model = AttributeNet(args.backbone, pretrained=False, drop=args.dropout).to(device)
+    eval_model = build_model(args.backbone, False, args.dropout, args.drop_path).to(device)
     eval_model = eval_model.to(memory_format=torch.channels_last)
 
     best, step, start = -1.0, 0, 1
@@ -233,20 +293,25 @@ def run_fold(args, holdout, images, labels, domains):
         log.write(json.dumps(r) + "\n")
     log.flush()
     for epoch in range(start, args.epochs + 1):
+        # LP-FT: the first --lp-epochs train only the head, then everything.
+        for p_ in back_params:
+            p_.requires_grad_(epoch > args.lp_epochs)
         model.train()
         t0, run_loss = time.time(), 0.0
         bar = tqdm(train_stream, desc=f"[{holdout}] epoch {epoch}/{args.epochs}", leave=False)
-        for i, (u8, y, _) in enumerate(bar):
-            x = gpu_augment(to_input(u8, device), args.aug)
+        for i, (u8, y, idx) in enumerate(bar):
+            x = gpu_augment(to_input(u8, device), args.aug, args.strong_lowres)
             y = y.to(device, non_blocking=True)
             if args.label_smooth:
                 y = y * (1 - args.label_smooth) + 0.5 * args.label_smooth
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
                 logits = model(x)
-            loss = F.binary_cross_entropy_with_logits(logits.float(), y)
+            loss = F.binary_cross_entropy_with_logits(logits.float(), y, reduction="none")
+            m = loss_mask_t[domains_t[torch.from_numpy(idx).to(device)]]
+            loss = (loss * m).sum() / m.sum()
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             opt.step()
             sched.step()
             ema.update(model)
@@ -312,6 +377,16 @@ def main():
     ap.add_argument("--aug", type=float, default=1.0, help="augmentation strength")
     ap.add_argument("--domain-alpha", type=float, default=0.5,
                     help="0 = natural mix, 1 = equal share per domain")
+    ap.add_argument("--drop-path", type=float, default=0.1, help="ViT backbones only")
+    ap.add_argument("--layer-decay", type=float, default=0.7, help="ViT layer-wise LR decay")
+    ap.add_argument("--lp-epochs", type=int, default=0, help="head-only epochs before full FT")
+    ap.add_argument("--clip-grad", type=float, default=5.0)
+    ap.add_argument("--mask-unlabeled", action="store_true",
+                    help="drop the loss on (domain, attribute) pairs with < --mask-min-pos positives")
+    ap.add_argument("--mask-min-pos", type=int, default=5)
+    ap.add_argument("--strong-lowres", action="store_true",
+                    help="24-64 px down-sampling, motion blur, wider aspect/offset jitter")
+    ap.add_argument("--jpeg-p", type=float, default=0.0, help="share of images JPEG re-encoded")
     ap.add_argument("--limit", type=int, default=0, help="subsample for smoke tests")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()

@@ -98,6 +98,11 @@ def backup_once(keep, settle):
                 old.unlink()
     for p in BACKUP_ROOT.rglob("*.tmp"):  # leftovers from an interrupted pass
         p.unlink(missing_ok=True)
+    # A finished fold (done.json) never resumes, so its last.pth backups are dead weight.
+    for vdir in BACKUP_ROOT.glob("runs/*/*/last.pth"):
+        fold = ROOT / vdir.parent.relative_to(BACKUP_ROOT)
+        if (fold / "done.json").exists():
+            shutil.rmtree(vdir)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{stamp}] backup: {copied} file(s) copied" +
           ("".join(f"\n  skipped {s}" for s in skipped) if skipped else ""))
