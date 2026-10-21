@@ -24,10 +24,11 @@ import threading
 import time
 
 import io
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 import torch.nn.functional as F
 from tqdm import tqdm
 
@@ -42,9 +43,11 @@ class BatchStream:
     """Draws index batches, gathers pixels from the memmap in a background thread."""
 
     def __init__(self, images, labels, indices, batch_size, weights=None, shuffle=True,
-                 drop_last=True, prefetch=6, jpeg_p=0.0):
+                 drop_last=True, prefetch=6, jpeg_p=0.0, augmix_p=0.0):
         self.images, self.labels = images, labels
         self.jpeg_p = jpeg_p
+        self.augmix_p = augmix_p
+        self.pool = ThreadPoolExecutor(6) if augmix_p else None
         self.indices = np.asarray(indices)
         self.batch_size, self.shuffle, self.drop_last = batch_size, shuffle, drop_last
         self.prefetch = prefetch
@@ -70,6 +73,8 @@ class BatchStream:
                 idx = order[b * self.batch_size:(b + 1) * self.batch_size]
                 srt = np.sort(idx)  # sorted reads are friendlier to the memmap
                 px = np.ascontiguousarray(self.images[srt])
+                if self.augmix_p:
+                    px = augmix_batch(px, self.augmix_p, self.pool)
                 if self.jpeg_p:
                     px = jpeg_recompress(px, self.jpeg_p)
                 q.put((torch.from_numpy(px).pin_memory(),
@@ -91,6 +96,55 @@ def jpeg_recompress(px, p, quality=(30, 90)):
     return px
 
 
+# Colour-safe AugMix (Hendrycks et al. 2020): no solarize / colour / hue ops,
+# because 25 of the 40 labels are colours.
+def _shear(im, m):
+    return im.transform(im.size, Image.AFFINE, (1, m, 0, 0, 1, 0), Image.BILINEAR)
+
+
+def _translate(im, m):
+    return im.transform(im.size, Image.AFFINE, (1, 0, m * im.size[0], 0, 1, 0), Image.BILINEAR)
+
+
+def _on_luma(im, fn):
+    """Apply a per-band op to brightness only; PIL's RGB versions shift hue."""
+    y, cb, cr = im.convert("YCbCr").split()
+    return Image.merge("YCbCr", (fn(y), cb, cr)).convert("RGB")
+
+
+AUGMIX_OPS = [
+    lambda im, r: _on_luma(im, ImageOps.autocontrast),
+    lambda im, r: _on_luma(im, ImageOps.equalize),
+    lambda im, r: ImageOps.posterize(im, int(r.integers(4, 8))),
+    lambda im, r: ImageEnhance.Sharpness(im).enhance(float(r.uniform(0.3, 1.8))),
+    lambda im, r: im.rotate(float(r.uniform(-10, 10)), resample=Image.BILINEAR),
+    lambda im, r: _shear(im, float(r.uniform(-0.15, 0.15))),
+    lambda im, r: _translate(im, float(r.uniform(-0.1, 0.1))),
+]
+
+
+def augmix_one(arr, seed, width=3, max_depth=3):
+    r = np.random.default_rng(seed)
+    im = Image.fromarray(arr)
+    ws = r.dirichlet([1.0] * width)
+    mix = np.zeros(arr.shape, dtype=np.float32)
+    for w in ws:
+        aug = im
+        for _ in range(int(r.integers(1, max_depth + 1))):
+            aug = AUGMIX_OPS[int(r.integers(len(AUGMIX_OPS)))](aug, r)
+        mix += w * np.asarray(aug, dtype=np.float32)
+    m = float(r.beta(1.0, 1.0))
+    return np.clip((1 - m) * arr + m * mix, 0, 255).astype(np.uint8)
+
+
+def augmix_batch(px, p, pool):
+    which = np.where(np.random.rand(len(px)) < p)[0]
+    seeds = np.random.randint(0, 2**31, len(which))
+    for i, out in zip(which, pool.map(augmix_one, [px[i] for i in which], seeds)):
+        px[i] = out
+    return px
+
+
 def to_input(u8, device):
     """uint8 NHWC on CPU -> normalized float NCHW on device (channels_last)."""
     x = u8.to(device, non_blocking=True).permute(0, 3, 1, 2).float().div_(255)
@@ -99,7 +153,7 @@ def to_input(u8, device):
     return ((x - mean) / std).contiguous(memory_format=torch.channels_last)
 
 
-def gpu_augment(x, strength=1.0, strong_lowres=False):
+def gpu_augment(x, strength=1.0, strong_lowres=False, erase_p=0.4):
     """Augment a normalized batch on the GPU. No hue changes, since colours are labels.
 
     strong_lowres: down-sample to 24-64 px height (surveillance-scale crops),
@@ -141,7 +195,7 @@ def gpu_augment(x, strength=1.0, strong_lowres=False):
     m = x.mean((1, 2, 3), keepdim=True)
     x = (x - m) * c + m + b
     # random erasing
-    erase = torch.rand(n, device=dev) < 0.4 * strength
+    erase = torch.rand(n, device=dev) < erase_p * strength
     if erase.any():
         eh = (torch.rand(n, device=dev) * 0.3 + 0.1) * h
         ew = (torch.rand(n, device=dev) * 0.5 + 0.2) * w
@@ -248,7 +302,7 @@ def run_fold(args, holdout, images, labels, domains):
     domains_t = torch.from_numpy(domains).to(device)
 
     train_stream = BatchStream(images, labels, train_idx, args.batch_size, weights=weights,
-                               jpeg_p=args.jpeg_p)
+                               jpeg_p=args.jpeg_p, augmix_p=args.augmix_p)
     eval_stream = BatchStream(images, labels, eval_idx, 256, shuffle=False, drop_last=False)
 
     model = build_model(args.backbone, True, args.dropout, args.drop_path).to(device)
@@ -300,7 +354,7 @@ def run_fold(args, holdout, images, labels, domains):
         t0, run_loss = time.time(), 0.0
         bar = tqdm(train_stream, desc=f"[{holdout}] epoch {epoch}/{args.epochs}", leave=False)
         for i, (u8, y, idx) in enumerate(bar):
-            x = gpu_augment(to_input(u8, device), args.aug, args.strong_lowres)
+            x = gpu_augment(to_input(u8, device), args.aug, args.strong_lowres, args.erase_p)
             y = y.to(device, non_blocking=True)
             if args.label_smooth:
                 y = y * (1 - args.label_smooth) + 0.5 * args.label_smooth
@@ -387,6 +441,8 @@ def main():
     ap.add_argument("--strong-lowres", action="store_true",
                     help="24-64 px down-sampling, motion blur, wider aspect/offset jitter")
     ap.add_argument("--jpeg-p", type=float, default=0.0, help="share of images JPEG re-encoded")
+    ap.add_argument("--augmix-p", type=float, default=0.0, help="share of images given colour-safe AugMix")
+    ap.add_argument("--erase-p", type=float, default=0.4, help="random-erasing probability (0 = off)")
     ap.add_argument("--limit", type=int, default=0, help="subsample for smoke tests")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()

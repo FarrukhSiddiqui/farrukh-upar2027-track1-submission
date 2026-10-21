@@ -94,7 +94,10 @@ def load_model() -> None:
         else:
             ckpt = torch.load(path, map_location="cpu", weights_only=False)
             backbone, raw = ckpt["backbone"], ckpt["state_dict"]
-        if backbone.startswith("clip_"):
+        if backbone.startswith("siglip"):
+            from siglip_vit import SigLIPAttributeNet
+            model = SigLIPAttributeNet(backbone, IMAGE_SIZE)
+        elif backbone.startswith("clip_"):
             from clip_vit import CLIPAttributeNet
             model = CLIPAttributeNet(backbone, IMAGE_SIZE)
         else:

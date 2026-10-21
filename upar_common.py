@@ -130,7 +130,13 @@ class AttributeNet(nn.Module):
 
 
 def build_model(backbone, pretrained=True, drop=0.2, drop_path=0.1):
-    """torchvision CNNs -> AttributeNet; clip_* -> submission/clip_vit.CLIPAttributeNet."""
+    """torchvision CNNs -> AttributeNet; clip_* / siglip* -> the ViTs in submission/."""
+    if backbone.startswith("siglip"):
+        import sys
+        sys.path.insert(0, str(ROOT / "submission"))
+        from siglip_vit import SigLIPAttributeNet
+        init = ROOT / "pretrained" / f"{backbone}_init.pth" if pretrained else None
+        return SigLIPAttributeNet(backbone, IMAGE_SIZE, drop_path=drop_path, init_path=init)
     if backbone.startswith("clip_"):
         import sys
         sys.path.insert(0, str(ROOT / "submission"))
