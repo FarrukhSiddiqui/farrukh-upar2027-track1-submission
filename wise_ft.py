@@ -30,6 +30,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
     ap.add_argument("--alphas", type=float, nargs="+", default=[0.5, 0.6, 0.7, 0.8, 0.9])
+    ap.add_argument("--no-tta", action="store_true",
+                    help="predict held-out logits without flip TTA (decoder then ships tta=false)")
+    ap.add_argument("--suffix", default="", help="appended to the output run name")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,7 +44,9 @@ def main():
     model = build_model(backbone, pretrained=False).to(device).to(memory_format=torch.channels_last)
 
     for alpha in args.alphas:
-        dst = RUNS_DIR / f"{args.run}_wise{alpha:g}"
+        dst = RUNS_DIR / f"{args.run}_wise{alpha:g}{args.suffix}"
+        dst.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(dst / "oof_meta.json", json.dumps({"tta": not args.no_tta}).encode())
         for fold in list(DOMAINS) + ["none"]:
             ck = torch.load(src / fold / "model.pth", map_location="cpu", weights_only=False)
             merged = merge(ck["state_dict"], zs, alpha)
@@ -52,7 +57,7 @@ def main():
                 idx = np.load(src / fold / "oof_index.npy")
                 model.load_state_dict(merged)
                 stream = BatchStream(images, labels, idx, 256, shuffle=False, drop_last=False)
-                logits = predict_logits(model, stream, device, tta=True)
+                logits = predict_logits(model, stream, device, tta=not args.no_tta)
                 atomic_np_save(out / "oof_logits.npy", logits.astype(np.float32))
                 atomic_np_save(out / "oof_index.npy", idx)
             atomic_write_bytes(out / "done.json", json.dumps({"wise_alpha": alpha}).encode())

@@ -285,6 +285,9 @@ def main():
         "nested_lodo": {"at_0.5": round(b, 4), "threshold": round(t, 4), "set": round(st, 4)},
         "folds": args.folds,
         "run": args.run,
+        # whether the held-out logits (and so run.py) use flip TTA
+        "tta": json.loads((RUNS_DIR / args.run / "oof_meta.json").read_text())["tta"]
+        if (RUNS_DIR / args.run / "oof_meta.json").exists() else True,
     }
     if mode == "set":
         priors = torch.as_tensor(domain_priors(all_labels, all_domains, fold_ids),

@@ -27,7 +27,8 @@ def main():
     ap.add_argument("--run", required=True)
     ap.add_argument("--decoder-run", help="run whose decoder.json to ship (default: --run)")
     ap.add_argument("--models", nargs="+", default=["none"],
-                    help="fold dirs under runs/<run>/ to ship; logits are averaged")
+                    help="fold dirs under runs/<run>/ to ship, or <run>:<fold> to take a "
+                         "model from another run (ensemble); logits are averaged")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -35,12 +36,13 @@ def main():
     if assets.exists():
         shutil.rmtree(assets)
     assets.mkdir(parents=True)
-    for i, fold in enumerate(args.models):
-        ckpt = torch.load(RUNS_DIR / args.run / fold / "model.pth", map_location="cpu",
+    for i, spec in enumerate(args.models):
+        run, fold = spec.split(":") if ":" in spec else (args.run, spec)
+        ckpt = torch.load(RUNS_DIR / run / fold / "model.pth", map_location="cpu",
                           weights_only=False)
         arrays = {k: (v.half() if v.is_floating_point() else v).numpy()
                   for k, v in ckpt["state_dict"].items()}
-        np.savez(assets / f"model_{i}_{fold}.npz", __backbone__=np.array(ckpt["backbone"]),
+        np.savez(assets / f"model_{i}_{run}_{fold}.npz", __backbone__=np.array(ckpt["backbone"]),
                  **arrays)
     decoder = RUNS_DIR / (args.decoder_run or args.run) / "decoder.json"
     shutil.copy(decoder, assets / "decoder.json")

@@ -134,9 +134,12 @@ def _forward(u8: torch.Tensor) -> np.ndarray:
     x = ((x - _MEAN_T) / _STD_T).contiguous(memory_format=torch.channels_last)
     use_amp = _DEVICE.type == "cuda"
     total = None
+    tta = _DEC.get("tta", True)  # flip TTA; decoder.json says whether it was fitted with it
     with torch.autocast(device_type=_DEVICE.type, dtype=torch.float16, enabled=use_amp):
         for model in _MODELS:
-            logit = (model(x).float() + model(x.flip(3)).float()) / 2
+            logit = model(x).float()
+            if tta:
+                logit = (logit + model(x.flip(3)).float()) / 2
             total = logit if total is None else total + logit
     return (total / len(_MODELS)).cpu().numpy()
 
