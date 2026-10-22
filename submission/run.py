@@ -111,6 +111,9 @@ def load_model() -> None:
     with open(os.path.join(ASSETS, "decoder.json"), "r", encoding="utf-8") as fh:
         dec = json.load(fh)
     _DEC = dec
+    if dec.get("model_weights") and len(dec["model_weights"]) != len(_MODELS):
+        raise RuntimeError(f"decoder.json has {len(dec['model_weights'])} model_weights "
+                           f"for {len(_MODELS)} models")
     _NAMES = dec["attribute_names"]
     _THR = np.asarray(dec["logit_thresholds"], dtype=np.float32)
     _GROUPS = list(dec.get("force_groups", {}).values())
@@ -138,13 +141,15 @@ def _forward(u8: torch.Tensor) -> np.ndarray:
     use_amp = _DEVICE.type == "cuda"
     total = None
     tta = _DEC.get("tta", True)  # flip TTA; decoder.json says whether it was fitted with it
+    # Ensemble weights, in model_*.npz file order; equal weights unless decoder.json sets them.
+    weights = _DEC.get("model_weights") or [1.0 / len(_MODELS)] * len(_MODELS)
     with torch.autocast(device_type=_DEVICE.type, dtype=torch.float16, enabled=use_amp):
-        for model in _MODELS:
+        for model, wt in zip(_MODELS, weights):
             logit = model(x).float()
             if tta:
                 logit = (logit + model(x.flip(3)).float()) / 2
-            total = logit if total is None else total + logit
-    return (total / len(_MODELS)).cpu().numpy()
+            total = wt * logit if total is None else total + wt * logit
+    return total.cpu().numpy()
 
 
 def _decode_set(logits: np.ndarray) -> np.ndarray:

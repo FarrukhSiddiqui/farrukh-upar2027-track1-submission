@@ -1,0 +1,5 @@
+{"epoch": 1, "train_loss_sampled": 0.34313531650924217, "time_s": 317.2}
+{"epoch": 2, "train_loss_sampled": 0.12053626447039492, "time_s": 1184.9}
+{"epoch": 3, "train_loss_sampled": 0.08692880761900953, "time_s": 1183.3}
+{"epoch": 4, "train_loss_sampled": 0.07639024441367855, "time_s": 1184.3}
+{"epoch": 5, "train_loss_sampled": 0.07433997952908862, "time_s": 1184.0}

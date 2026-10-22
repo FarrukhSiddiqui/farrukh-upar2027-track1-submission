@@ -1,0 +1,11 @@
+variant,lodo_challenge_avg
+decoder: plain 0.5 cut (final ViT-L),0.8052
+decoder: per-attribute thresholds,0.8165
+decoder: per-image set decoder (shipped),0.8292
+flip TTA on ViT-L (no WiSE),0.8283
+no TTA on ViT-L (no WiSE),0.8271
+logistic stacker on ViT-L logits,0.7843
+logistic stacker on ViT-L + ViT-B logits,0.7947
+logistic stacker on ViT-L + zero-shot ViT-B,0.7911
+zero-shot ViT-B fusion beta=0.2,0.8299
+ensemble ViT-L 80% + ViT-B 20%,0.8295

@@ -1,0 +1,15 @@
+{
+  "mA": 0.777103,
+  "mA_std": 0.056109,
+  "Label_F1": 0.522184,
+  "Label_F1_std": 0.088641,
+  "Instance_Acc": 0.635706,
+  "Instance_Acc_std": 0.078122,
+  "Instance_Prec": 0.716103,
+  "Instance_Prec_std": 0.060782,
+  "Instance_Rec": 0.823729,
+  "Instance_Rec_std": 0.053093,
+  "Instance_F1": 0.755886,
+  "Instance_F1_std": 0.058931,
+  "Challenge_Avg": 0.766348
+}
