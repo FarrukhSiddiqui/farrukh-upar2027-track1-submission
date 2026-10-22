@@ -3,16 +3,21 @@
 Pedestrian attribute recognition under domain shift (RWS workshop, WACV 2027,
 [Codabench competition 18180](https://www.codabench.org/competitions/18180/)).
 
+**Team:** Farrukh Ahmed Siddiqui · Syed Muhammad Arham Tahir
+· Syed Muhammad Hamza Naveed
+
 **Final submission:** CLIP ViT-L/14 fine-tuned with leave-one-dataset-out
 validation, WiSE-FT (α = 0.9) and a metric-aware decoder.
 **Official result: Challenge_Avg 0.7856** (mA 0.788, instance F1 0.784),
-rank 30 at submission time.
+rank 30 — Codabench submission 1007093, team account `farrukh-siddiqui`
+(screenshot: `submission_proof/codabench_leaderboard_rank30.png`).
 
 ## Contents
 
 | Path | What it is |
 | --- | --- |
 | `README.md` | This file: task, approach, results, how to reproduce |
+| `submission_proof/codabench_leaderboard_rank30.png` | Leaderboard screenshot: rank 30, submission 1007093, 0.7856 |
 | `submission_proof/final_clip_vitl14_wise0.9/` | Official scoring output of the final submission (`scores.json`, `per_attribute.json`, `detailed_results.html`, original zip) |
 | `submission_proof/earlier_clip_vitb16_wise0.8/` | Same for the earlier CLIP ViT-B/16 submission (0.7663) |
 | `results/model_results.csv` | Every model: LODO estimate, leaderboard scores, per test dataset, inference time |
