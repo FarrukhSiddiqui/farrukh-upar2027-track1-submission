@@ -1,0 +1,9 @@
+# Inference needs only torch, torchvision, numpy and Pillow (all in the
+# pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime image). Training adds:
+tqdm
+gdown
+requests
+# only for get_clip_weights.sh (converting OpenAI's CLIP checkpoint):
+open_clip_torch==3.3.0
+ftfy
+regex

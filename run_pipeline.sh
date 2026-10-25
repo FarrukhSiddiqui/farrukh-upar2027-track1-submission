@@ -6,7 +6,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 NAME=${1:-convnext_tiny_v1}; shift || true
-PY=.venv-rocm/bin/python
+# Python to use: $PY if set, else the local ROCm venv if present, else `python` (e.g. in Docker).
+if [ -z "${PY:-}" ]; then
+  if [ -x .venv-rocm/bin/python ]; then PY=.venv-rocm/bin/python; else PY=python; fi
+fi
 $PY train_lodo.py --holdout all-folds --name "$NAME" "$@"
 $PY train_lodo.py --holdout none --name "$NAME" "$@"
 $PY fit_decoder.py --run "$NAME"

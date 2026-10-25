@@ -68,21 +68,29 @@ class BatchStream:
         order = self._order()
         q = queue.Queue(self.prefetch)
 
+        pin = torch.cuda.is_available()  # pinned memory needs a GPU
+
         def worker():
-            for b in range(len(self)):
-                idx = order[b * self.batch_size:(b + 1) * self.batch_size]
-                srt = np.sort(idx)  # sorted reads are friendlier to the memmap
-                px = np.ascontiguousarray(self.images[srt])
-                if self.augmix_p:
-                    px = augmix_batch(px, self.augmix_p, self.pool)
-                if self.jpeg_p:
-                    px = jpeg_recompress(px, self.jpeg_p)
-                q.put((torch.from_numpy(px).pin_memory(),
-                       torch.from_numpy(self.labels[srt].astype(np.float32)), srt))
-            q.put(None)
+            try:
+                for b in range(len(self)):
+                    idx = order[b * self.batch_size:(b + 1) * self.batch_size]
+                    srt = np.sort(idx)  # sorted reads are friendlier to the memmap
+                    px = np.ascontiguousarray(self.images[srt])
+                    if self.augmix_p:
+                        px = augmix_batch(px, self.augmix_p, self.pool)
+                    if self.jpeg_p:
+                        px = jpeg_recompress(px, self.jpeg_p)
+                    u8 = torch.from_numpy(px)
+                    q.put((u8.pin_memory() if pin else u8,
+                           torch.from_numpy(self.labels[srt].astype(np.float32)), srt))
+                q.put(None)
+            except BaseException as e:  # hand the error to the consumer instead of hanging it
+                q.put(e)
 
         threading.Thread(target=worker, daemon=True).start()
         while (item := q.get()) is not None:
+            if isinstance(item, BaseException):
+                raise item
             yield item
 
 
@@ -320,7 +328,7 @@ def run_fold(args, holdout, images, labels, domains):
                   {"params": head_params, "lr": args.lr * args.head_lr_mult}]
     opt = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
     total = args.epochs * len(train_stream)
-    warm = min(len(train_stream), total // 10)
+    warm = max(1, min(len(train_stream), total // 10))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1, (s + 1) / warm) * 0.5 * (
         1 + math.cos(math.pi * min(1.0, max(0, s - warm) / max(1, total - warm)))))
     ema = EMA(model, args.ema)

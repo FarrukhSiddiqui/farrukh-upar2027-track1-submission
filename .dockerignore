@@ -1,0 +1,12 @@
+.git
+.venv*
+data
+cache
+runs
+backups
+pretrained
+deliverables
+factsheet
+submission/assets
+*.zip
+__pycache__

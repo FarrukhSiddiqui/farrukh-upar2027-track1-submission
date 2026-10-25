@@ -1,122 +1,105 @@
-# UPAR 2027 Challenge Track 1 & 2 Development Data @ Real-World Surveillance Workshop 2027
+# UPAR 2027 Challenge — Track 1: Pedestrian Attribute Recognition
 
-This repository prepares the public training and validation data for the two
-UPAR 2027 Challenge tracks:
+Code for our Track 1 entry (RWS workshop @ WACV 2027,
+[Codabench 18180](https://www.codabench.org/competitions/18180/)):
+**CLIP ViT-L/14 fine-tuned with leave-one-dataset-out (LODO) model selection,
+WiSE-FT and a metric-aware set decoder.**
 
-1. Pedestrian Attribute Recognition
-2. Attribute-based Person Retrieval
+| | Challenge_Avg | mA | Label F1 | Inst Acc | Inst Prec | Inst Rec | Inst F1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Final submission 1007093 (`farrukh-siddiqui`) | **0.7856** | 0.7877 | 0.5504 | 0.6723 | 0.7531 | 0.8343 | 0.7835 |
 
-Both tracks use the same ordered vocabulary of 40 binary attributes across
-Market1501, PA-100K, and PETA.
+Team: Farrukh Ahmed Siddiqui, Syed Muhammad Arham Tahir, Syed Muhammad Hamza Naveed.
+The method is described in the fact sheet (`factsheet/`).
 
-## Information
-Challenge Track 1: [Track 1](https://www.codabench.org/competitions/18180/)
+## Trained weights
 
-Challenge Track 2: [Track 2](https://www.codabench.org/competitions/18196/)
+Download from Google Drive: **[WEIGHTS_URL]**
 
-Associated workshop: [Real-World Surveillance: Applications and Challenges Workshop](https://vap.aau.dk/rws)
+| File | Size | SHA-256 | What it is |
+| --- | --- | --- | --- |
+| `submission_clip_l14_v1_wise0.9_nt.zip` | 537 MB | `e82373516fce2a3c8c21a49d02193ee9cbc5e925d5c8bc1b76747e961f27758a` | **The exact zip scored on Codabench**: `run.py`, model code, fp16 weights, decoder |
+| `clip_l14_v1_none_model.pth` | 1.2 GB | `2fb5d8d34ef1dbd643db0a6e02ad2bc8637aab7c4e7ad5e3f9264b73f381ccdb` | Fine-tuned fp32 checkpoint before WiSE-FT (optional) |
+| `clip_vit_l14_init.pth` | 1.2 GB | `e85c837a4ab4be92b645942a67867a10b69afefe1c9477de74618e69758dfbf0` | CLIP ViT-L/14 + text-initialised head, the training start point (optional; `get_clip_weights.sh` rebuilds it) |
 
-Challenge results 2024: [UPAR@RWS2024](https://openaccess.thecvf.com/content/WACV2024W/RWS/papers/Cormier_UPAR_Challenge_2024_Pedestrian_Attribute_Recognition_and_Attribute-Based_Person_Retrieval_WACVW_2024_paper.pdf)
+## Reproduce the leaderboard predictions (inference)
 
-Challenge results 2023: [UPAR@RWS2023](https://openaccess.thecvf.com/content/WACV2023W/RWS/papers/Cormier_UPAR_Challenge_Pedestrian_Attribute_Recognition_and_Attribute-Based_Person_Retrieval_--_WACVW_2023_paper.pdf)
-
-UPAR Paper: [UPAR dataset](https://openaccess.thecvf.com/content/WACV2023/papers/Specker_UPAR_Unified_Pedestrian_Attribute_Recognition_and_Person_Retrieval_WACV_2023_paper.pdf)
-
-## Setup
+The submission zip is self-contained and needs only torch, torchvision,
+numpy and Pillow. With Docker (same base image as the evaluation container):
 
 ```bash
-conda env create -f environment.yml
-conda activate rws-upar-challenge
-python download_datasets.py
+docker build -t upar-t1 .
+unzip submission_clip_l14_v1_wise0.9_nt.zip -d weights/submission
+docker run --rm --gpus all -v "$PWD/weights:/weights" -v /path/to/input_data:/input \
+  upar-t1 python predict.py --submission /weights/submission \
+  --images /input/images --list /input/images.csv --out /weights/predictions.csv
 ```
 
-## Generated Structure
+`--list` takes the Codabench `images.csv` layout (one path per line, relative to
+`--images`); without it every image under `--images` is used. The output has the
+`gt.csv` layout with 40 probabilities per image (present when > 0.5). The zip
+itself is also the Codabench submission format: the ingestion program imports
+`run.py` and calls `load_model()` / `predict_batch()`. The 29,248 test images
+took 101.5 s on the A10.
 
-```text
-.
-│── data/                               
-│   ├── annotations/                     
-│   │   │── task1/                    
-│   │   │   └── train/
-│   │   │       └── gt.csv        -> attribute annotations for train split
-│   │   │   └── val/
-│   │   │       └── gt.csv        -> attribute annotations for val split
-│   │   ├── task2/              
-│   │   │   └── train/
-│   │   │       └── gt.csv        -> attribute annotations
-│   │   │       └── ids.csv       -> semantic ids for retrieval
-│   │   │       └── queries.csv   -> attribute queries for the semantic ids
-│   │   │   └── val/
-│   │   │       └── gt.csv        -> attribute annotations
-│   │   │       └── ids.csv       -> semantic ids for retrieval
-│   │   │       └── queries.csv   -> attribute queries for the semantic ids
-│   ├── Market1501/               -> Market1501 dataset
-│   │   ├── bounding_box_test/
-│   │   ├── bounding_box_train/
-│   │   ├── query/
-│   │   └── ...
-│   ├── PA100k/                   -> PA100k dataset
-│   │   └── release_data/
-│   │       └── release_data/
-│   └── PETA/                     -> PETA dataset
-│       └── images/
-└── submission_templates/
-    ├── task1/                    -> submission template for task1
-    └── task2/                    -> submission template for task2
+Without Docker: Python ≥ 3.11 with torch ≥ 2.4 and torchvision, then the same
+`python predict.py …` command.
 
+## Reproduce training
+
+Hardware used: one AMD RX 9070 XT (16 GB, ROCm 7.1, PyTorch 2.13). The code is
+device-agnostic and runs on CUDA as is (bf16 autocast). A full run (3 LODO folds
++ final model) took about 4.5 hours; it needs about 13 GB of GPU memory at batch 32
+and about 15 GB of disk for the image cache.
+
+```bash
+docker run --rm -it --gpus all --shm-size 8g -v "$PWD:/workspace" upar-t1 bash
+# inside the container, in /workspace:
+python download_datasets.py              # official starter-kit data -> data/
+python cache_images.py                   # decode + resize all 131,076 crops once -> cache/
+./get_clip_weights.sh                    # OpenAI CLIP ViT-L/14 -> pretrained/clip_vit_l14_init.pth
+./run_pipeline.sh clip_l14_v1 --backbone clip_vit_l14 --epochs 5 --batch-size 32 \
+  --lr 2e-5 --head-lr-mult 50 --layer-decay 0.8 --lp-epochs 1 --drop-path 0.1 \
+  --weight-decay 0.05 --clip-grad 1.0 --ema 0.999 --mask-unlabeled --strong-lowres --jpeg-p 0.3
+python wise_ft.py --run clip_l14_v1 --alphas 0.9 --no-tta --suffix _nt
+python fit_decoder.py --run clip_l14_v1_wise0.9_nt
+python make_submission.py --run clip_l14_v1_wise0.9_nt    # -> submission_clip_l14_v1_wise0.9_nt.zip
 ```
 
-`gt.csv` uses the challenge format `# image,<40 attributes>`. For retrieval,
-each distinct 40-bit attribute vector is one query and `ids.csv` maps every
-image to its zero-based query row. Train and validation query vocabularies are
-kept separate.
+What each step does:
 
-Current release counts:
+1. `run_pipeline.sh` trains three LODO folds (each holds out one of Market1501,
+   PA-100K, PETA), then the final model on all data (`runs/clip_l14_v1/none/`),
+   and writes each fold's held-out logits. It resumes from the last epoch if
+   interrupted.
+2. `wise_ft.py` interpolates every model 90/10 with zero-shot CLIP and
+   re-predicts the held-out folds without flip TTA.
+3. `fit_decoder.py` tunes the set decoder on those held-out logits and reports
+   the nested-LODO estimate (0.829 for the submitted model).
+4. `make_submission.py` packages `submission/` with the fp16 weights and the
+   decoder into the Codabench zip.
 
-| Split | Images | Retrieval queries | Market1501 | PA100k | PETA |
-|---|---:|---:|---:|---:|---:|
-| Train | 97,669 | 7,204 | 10,000 | 79,001 | 8,668 |
-| Validation | 33,407 | 3,462 | 16,458 | 9,986 | 6,963 |
+Seed 42 is fixed; GPU kernels are not bit-deterministic, so retrained weights
+differ slightly from the released ones.
 
-## Dataset Sources
-We build on an extension of the UPAR dataset.
-The challenge training dataset consists of the harmonization of three public datasets (PA100K, PETA, and Market1501-Attributes) and a private test set.
-40 binary attributes have been unified between those for which we provide additional annotations.
-This dataset enables the investigation of Pedestrian Attribute Recognition (PAR) methods' generalization ability under different attribute distributions, viewpoints, varying illumination, and low resolutions.
+## Repository layout
 
-If you use the UPAR dataset, please cite our UPAR papers as well as the papers of the sub-datasets:
-- PA-100K: X. Liu et al., *HydraPlus-Net*, ICCV 2017, CC BY 4.0.
-- PETA: Y. Deng et al., *Pedestrian Attribute Recognition at Far Distance*,
-  ACM Multimedia 2014, research use only.
-- Market1501: L. Zheng et al., *Scalable Person Re-identification: A
-  Benchmark*, ICCV 2015.
+| Path | Purpose |
+| --- | --- |
+| `submission/run.py` | Codabench entry point: loading, batched fp16 inference, set decoder |
+| `submission/clip_vit.py` | CLIP ViT in plain PyTorch + text-initialised attribute head |
+| `train_lodo.py` | LODO training: GPU augmentation, sampling, masked BCE, EMA, resumable checkpoints |
+| `fit_decoder.py` | Per-attribute thresholds and the per-image set decoder, nested-LODO evaluation |
+| `wise_ft.py`, `soup.py`, `ensemble_eval.py` | WiSE-FT, weight soups, weighted logit ensembles |
+| `make_clip_init.py`, `get_clip_weights.sh` | Convert OpenAI CLIP weights and build the prompt-initialised head |
+| `cache_images.py`, `upar_common.py` | Image cache, model factory, metrics, atomic I/O |
+| `predict.py`, `emulate_ingestion.py`, `test_submission.py` | Run a submission locally the way Codabench does |
+| `submission/siglip_vit.py`, `make_siglip_init.py` | SigLIP2 ViT-L/16 backbone (experiments, not in the final entry) |
+| `factsheet/` | Challenge fact sheet (LaTeX) |
+| `docs/STARTER_KIT_README.md` | The organizers' original starter-kit README |
 
-```bibtex
-@inproceedings{specker2023upar,
-  title={UPAR: Unified Pedestrian Attribute Recognition and Person Retrieval},
-  author={Specker, Andreas and Cormier, Mickael and Beyerer, Jurgen},
-  booktitle={Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision},
-  year={2023}
-}
+## Data and licences
 
-@inproceedings{cormier2023upar,
-  title={UPAR challenge: pedestrian attribute recognition and attribute-based person retrieval-dataset, design, and results},
-  author={Cormier, Mickael and Specker, Andreas and Jacques, Julio CS and Florin, Lucas and Metzler, J{\"u}rgen and Moeslund, Thomas B and Nasrollahi, Kamal and Escalera, Sergio and Beyerer, J{\"u}rgen},
-  booktitle={2023 IEEE/CVF Winter Conference on Applications of Computer Vision Workshops (WACVW)},
-  pages={166--175},
-  year={2023},
-  organization={IEEE}
-}
-
-@inproceedings{cormier2024upar,
-  title={Upar challenge 2024: Pedestrian attribute recognition and attribute-based person retrieval-dataset, design, and results},
-  author={Cormier, Mickael and Specker, Andreas and Junior, Julio and CS, Jacques and Moritz, Lennart and Metzler, J{\"u}rgen and Moeslund, Thomas B and Nasrollahi, Kamal and Escalera, Sergio and Beyerer, J{\"u}rgen},
-  booktitle={Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision},
-  pages={359--367},
-  year={2024}
-}
-```
-
-## License
-This work is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/3.0/de/">Creative Commons Attribution-NonCommercial-ShareAlike 3.0 License</a>. The source image
-datasets retain their respective licenses and usage restrictions.
+Uses only the organizers' training data (PA-100K, PETA, Market1501 with UPAR
+annotations; CC BY-NC-SA 3.0) and OpenAI's public CLIP weights. Please cite the
+UPAR papers listed in `docs/STARTER_KIT_README.md`.
