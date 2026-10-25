@@ -49,6 +49,10 @@ took 101.5 s on the A10.
 Without Docker: Python ≥ 3.11 with torch ≥ 2.4 and torchvision, then the same
 `python predict.py …` command.
 
+The image (about 9.5 GB, torch 2.4.1 from the base image left untouched) was
+built and tested with Docker 29: inference with the released zip, a short
+training run, and the CLIP weight conversion all run inside the container.
+
 ## Reproduce training
 
 Hardware used: one AMD RX 9070 XT (16 GB, ROCm 7.1, PyTorch 2.13). The code is
