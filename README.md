@@ -15,13 +15,16 @@ The method is described in the fact sheet (`factsheet/`).
 
 ## Trained weights
 
-Download from Google Drive: **[WEIGHTS_URL]**
+Download from Google Drive: **[submission_clip_l14_v1_wise0.9_nt.zip](https://drive.google.com/file/d/1lKq8vwCnrUSBKOp9rm5ti3g1gAN0YDBd/view?usp=sharing)**
+(537 MB, SHA-256 `e82373516fce2a3c8c21a49d02193ee9cbc5e925d5c8bc1b76747e961f27758a`).
 
-| File | Size | SHA-256 | What it is |
-| --- | --- | --- | --- |
-| `submission_clip_l14_v1_wise0.9_nt.zip` | 537 MB | `e82373516fce2a3c8c21a49d02193ee9cbc5e925d5c8bc1b76747e961f27758a` | **The exact zip scored on Codabench**: `run.py`, model code, fp16 weights, decoder |
-| `clip_l14_v1_none_model.pth` | 1.2 GB | `2fb5d8d34ef1dbd643db0a6e02ad2bc8637aab7c4e7ad5e3f9264b73f381ccdb` | Fine-tuned fp32 checkpoint before WiSE-FT (optional) |
-| `clip_vit_l14_init.pth` | 1.2 GB | `e85c837a4ab4be92b645942a67867a10b69afefe1c9477de74618e69758dfbf0` | CLIP ViT-L/14 + text-initialised head, the training start point (optional; `get_clip_weights.sh` rebuilds it) |
+This is **the exact zip scored on Codabench**: `run.py`, the model code, the
+fp16 weights of the final model and the tuned decoder. From the command line:
+`pip install gdown && gdown 1lKq8vwCnrUSBKOp9rm5ti3g1gAN0YDBd`.
+
+The training start point (`pretrained/clip_vit_l14_init.pth`) is rebuilt from
+OpenAI's public CLIP weights by `get_clip_weights.sh`. The fp32 checkpoints
+(fine-tuned model before WiSE-FT, 1.2 GB each) are available on request.
 
 ## Reproduce the leaderboard predictions (inference)
 
