@@ -9,7 +9,8 @@ WiSE-FT and a metric-aware set decoder.**
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Final submission 1007093 (`farrukh-siddiqui`) | **0.7856** | 0.7877 | 0.5504 | 0.6723 | 0.7531 | 0.8343 | 0.7835 |
 
-Team: Farrukh Ahmed Siddiqui, Syed Muhammad Arham Tahir, Syed Muhammad Hamza Naveed.
+Team: Farrukh Ahmed Siddiqui, Syed Muhammad Arham Tahir, Syed Muhammad Hamza Naveed
+(Department of Artificial Intelligence, FAST-NUCES City Campus, Karachi).
 The method is described in the fact sheet (`factsheet/`).
 
 ## Trained weights
